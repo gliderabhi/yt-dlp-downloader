@@ -1,0 +1,18 @@
+[Unit]
+Description=YT-DLP Downloader Web UI
+After=network-online.target sevis-stack.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sevis
+ExecStart=/home/sevis/.local/bin/yt-dlp-webui
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+Environment="PATH=/home/sevis/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/sevis"
+
+[Install]
+WantedBy=default.target
