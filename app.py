@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import shutil
+from urllib.parse import quote
 from flask import Flask, request, Response, send_from_directory, jsonify, stream_with_context
 
 app = Flask(__name__, static_folder=".")
@@ -156,11 +157,12 @@ def stream_file(filename):
                 yield chunk
         os.remove(filepath)
 
+    encoded_name = quote(filename.encode("utf-8"))
     return Response(
         stream_with_context(generate_file()),
         mimetype="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
             "Content-Length": str(filesize),
         }
     )
