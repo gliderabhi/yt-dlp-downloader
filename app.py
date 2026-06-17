@@ -1,6 +1,8 @@
 import subprocess
 import os
 import json
+import uuid
+import shutil
 from flask import Flask, request, Response, send_from_directory, jsonify, stream_with_context
 
 app = Flask(__name__, static_folder=".")
@@ -14,22 +16,6 @@ YTDLP = os.path.join(LOCAL_BIN, "yt-dlp")
 @app.route("/")
 def index():
     return send_from_directory(".", "index.html")
-
-
-@app.route("/downloads/<path:filename>")
-def serve_download(filename):
-    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
-
-
-@app.route("/list-downloads")
-def list_downloads():
-    files = []
-    for f in os.listdir(DOWNLOAD_DIR):
-        path = os.path.join(DOWNLOAD_DIR, f)
-        if os.path.isfile(path):
-            files.append({"name": f, "size": os.path.getsize(path)})
-    files.sort(key=lambda x: x["name"])
-    return jsonify(files)
 
 
 @app.route("/formats", methods=["POST"])
@@ -51,12 +37,12 @@ def get_formats():
         formats = []
         seen = set()
         for f in info.get("formats", []):
-            fid = f.get("format_id", "")
             ext = f.get("ext", "")
             height = f.get("height")
             vcodec = f.get("vcodec", "none")
             acodec = f.get("acodec", "none")
             note = f.get("format_note", "")
+            fid = f.get("format_id", "")
 
             label_parts = []
             if height:
@@ -69,11 +55,10 @@ def get_formats():
             elif acodec == "none":
                 label_parts.append("video only")
 
-            label = " | ".join(label_parts)
             key = (height, ext, vcodec == "none", acodec == "none")
             if key not in seen:
                 seen.add(key)
-                formats.append({"id": fid, "label": label, "height": height or 0})
+                formats.append({"id": fid, "label": " | ".join(label_parts), "height": height or 0})
 
         formats.sort(key=lambda x: x["height"], reverse=True)
         return jsonify({
@@ -101,21 +86,23 @@ def download():
     if not url:
         return Response("data: ERROR: No URL provided\n\n", mimetype="text/event-stream")
 
-    cmd = [YTDLP, "--no-playlist", "-o", os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")]
+    # Isolated temp dir per request so we can reliably find the output file
+    tmpdir = os.path.join(DOWNLOAD_DIR, str(uuid.uuid4()))
+    os.makedirs(tmpdir, exist_ok=True)
+
+    cmd = [YTDLP, "--no-playlist", "-o", os.path.join(tmpdir, "%(title)s.%(ext)s")]
 
     if audio_only:
         cmd += ["-x", "--audio-format", audio_format]
     else:
-        if quality == "best":
-            cmd += ["-f", "bestvideo+bestaudio/best"]
-        elif quality == "1080":
-            cmd += ["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]"]
-        elif quality == "720":
-            cmd += ["-f", "bestvideo[height<=720]+bestaudio/best[height<=720]"]
-        elif quality == "480":
-            cmd += ["-f", "bestvideo[height<=480]+bestaudio/best[height<=480]"]
-        elif quality == "360":
-            cmd += ["-f", "bestvideo[height<=360]+bestaudio/best[height<=360]"]
+        quality_map = {
+            "best": "bestvideo+bestaudio/best",
+            "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            "720":  "bestvideo[height<=720]+bestaudio/best[height<=720]",
+            "480":  "bestvideo[height<=480]+bestaudio/best[height<=480]",
+            "360":  "bestvideo[height<=360]+bestaudio/best[height<=360]",
+        }
+        cmd += ["-f", quality_map.get(quality, "bestvideo+bestaudio/best")]
 
     if subtitles:
         cmd += ["--write-subs", "--sub-lang", sub_lang, "--embed-subs"]
@@ -133,12 +120,50 @@ def download():
             if line:
                 yield f"data: {line}\n\n"
         proc.wait()
+
         if proc.returncode == 0:
-            yield "data: DONE\n\n"
+            files = [f for f in os.listdir(tmpdir) if os.path.isfile(os.path.join(tmpdir, f))]
+            if files:
+                filename = files[0]
+                dest = os.path.join(DOWNLOAD_DIR, filename)
+                shutil.move(os.path.join(tmpdir, filename), dest)
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                yield f"data: DONE:{filename}\n\n"
+            else:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                yield "data: ERROR: No output file found\n\n"
         else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
             yield "data: ERROR: Download failed\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
+@app.route("/stream/<path:filename>")
+def stream_file(filename):
+    filepath = os.path.join(DOWNLOAD_DIR, filename)
+    if not os.path.isfile(filepath):
+        return "File not found", 404
+
+    filesize = os.path.getsize(filepath)
+
+    def generate_file():
+        with open(filepath, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        os.remove(filepath)
+
+    return Response(
+        stream_with_context(generate_file()),
+        mimetype="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(filesize),
+        }
+    )
 
 
 if __name__ == "__main__":
