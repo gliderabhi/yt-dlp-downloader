@@ -4,7 +4,7 @@ import json
 import uuid
 import shutil
 from urllib.parse import quote
-from flask import Flask, request, Response, send_from_directory, jsonify, stream_with_context
+from flask import Flask, request, Response, send_from_directory, jsonify, stream_with_context, make_response
 
 app = Flask(__name__, static_folder=".")
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
@@ -17,6 +17,25 @@ YTDLP = os.path.join(LOCAL_BIN, "yt-dlp")
 @app.route("/")
 def index():
     return send_from_directory(".", "index.html")
+
+
+@app.route("/robots.txt")
+def robots():
+    r = make_response("User-agent: *\nAllow: /\nSitemap: https://yt.sevis.store/sitemap.xml\n", 200)
+    r.headers["Content-Type"] = "text/plain"
+    return r
+
+
+@app.route("/sitemap.xml")
+def sitemap():
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+           '<url><loc>https://yt.sevis.store/</loc><changefreq>monthly</changefreq><priority>1.0</priority></url>'
+           '</urlset>')
+    r = make_response(xml, 200)
+    r.headers["Content-Type"] = "application/xml"
+    return r
+
 
 
 @app.route("/formats", methods=["POST"])
